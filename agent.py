@@ -1,12 +1,11 @@
-# agent.py — Sentinel AI Fraud Investigation Agent
+# agent.py — Sentinel AI (Compatible with LangChain 1.2.15)
 
 import os
 from dotenv import load_dotenv
 
 from langchain_anthropic import ChatAnthropic
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain.tools import tool
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from tools import (
     get_transaction,
@@ -21,7 +20,7 @@ from tools import (
 load_dotenv()
 
 # ─────────────────────────────────────────
-# Step 1 — Initialize Claude LLM
+# Initialize Claude LLM
 # ─────────────────────────────────────────
 llm = ChatAnthropic(
     model="claude-sonnet-4-20250514",
@@ -30,7 +29,7 @@ llm = ChatAnthropic(
 )
 
 # ─────────────────────────────────────────
-# Step 2 — Wrap Tools for LangChain
+# Wrap Tools for LangChain
 # ─────────────────────────────────────────
 
 @tool
@@ -54,7 +53,7 @@ def get_risk_score(transaction_id: str) -> dict:
     return calculate_risk_score(transaction_id)
 
 # ─────────────────────────────────────────
-# Step 3 — Register All Tools
+# Register Tools
 # ─────────────────────────────────────────
 tools = [
     fetch_transaction,
@@ -64,92 +63,114 @@ tools = [
 ]
 
 # ─────────────────────────────────────────
-# Step 4 — Define Agent System Prompt
+# Bind Tools to Claude
 # ─────────────────────────────────────────
-prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """
-        You are SentinelAI, an expert fraud investigation agent 
-        for a fintech payments company.
-
-        When given a transaction ID, you must:
-        1. Fetch the transaction details
-        2. Check the account transaction history
-        3. Verify if sender or receiver is on the watchlist
-        4. Calculate the fraud risk score
-        5. Generate a clear investigation report
-
-        Always end with a structured report in this format:
-
-        ═══════════════════════════════════════
-               SENTINEL AI — INVESTIGATION REPORT
-        ═══════════════════════════════════════
-        Transaction ID   : <id>
-        Account ID       : <id>
-        Account Holder   : <name>
-        Amount           : ₹<amount>
-        Location         : <location>
-        Transaction Type : <type>
-        Timestamp        : <time>
-        ───────────────────────────────────────
-        Watchlist Status : <flagged/clear>
-        Risk Score       : <score>/100
-        Risk Level       : <level>
-        ───────────────────────────────────────
-        Key Findings     :
-          • <finding 1>
-          • <finding 2>
-          • <finding 3>
-        ───────────────────────────────────────
-        Recommendation   : <action>
-        ═══════════════════════════════════════
-        """
-    ),
-    ("human", "{input}"),
-    ("placeholder", "{agent_scratchpad}")
-])
+llm_with_tools = llm.bind_tools(tools)
 
 # ─────────────────────────────────────────
-# Step 5 — Create the Agent
+# System Prompt
 # ─────────────────────────────────────────
-agent = create_tool_calling_agent(
-    llm=llm,
-    tools=tools,
-    prompt=prompt
-)
+SYSTEM_PROMPT = """
+You are SentinelAI, an expert fraud investigation agent
+for a fintech payments company.
+
+When given a transaction ID, you must:
+1. Fetch the transaction details
+2. Check the account transaction history
+3. Verify if sender or receiver is on the watchlist
+4. Calculate the fraud risk score
+5. Generate a clear investigation report
+
+Always end with a structured report in this format:
+
+═══════════════════════════════════════
+       SENTINEL AI — INVESTIGATION REPORT
+═══════════════════════════════════════
+Transaction ID   : <id>
+Account ID       : <id>
+Account Holder   : <name>
+Amount           : ₹<amount>
+Location         : <location>
+Transaction Type : <type>
+Timestamp        : <time>
+───────────────────────────────────────
+Watchlist Status : <flagged/clear>
+Risk Score       : <score>/100
+Risk Level       : <level>
+───────────────────────────────────────
+Key Findings     :
+  • <finding 1>
+  • <finding 2>
+  • <finding 3>
+───────────────────────────────────────
+Recommendation   : <action>
+═══════════════════════════════════════
+"""
 
 # ─────────────────────────────────────────
-# Step 6 — Create Agent Executor
+# Tool Executor
 # ─────────────────────────────────────────
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=tools,
-    verbose=True,
-    handle_parsing_errors=True
-)
+tool_map = {
+    "fetch_transaction"    : fetch_transaction,
+    "fetch_account_history": fetch_account_history,
+    "verify_watchlist"     : verify_watchlist,
+    "get_risk_score"       : get_risk_score
+}
+
+def execute_tool(tool_call: dict) -> str:
+    tool_name = tool_call["name"]
+    tool_args = tool_call["args"]
+
+    if tool_name in tool_map:
+        result = tool_map[tool_name].invoke(tool_args)
+        print(f"\n🔧 Tool Called : {tool_name}")
+        print(f"📥 Input       : {tool_args}")
+        print(f"📤 Output      : {result}")
+        return str(result)
+
+    return f"Tool {tool_name} not found"
 
 # ─────────────────────────────────────────
-# Step 7 — Main Investigation Function
+# Main Investigation Function
 # ─────────────────────────────────────────
 def investigate(transaction_id: str) -> str:
-    """
-    Main function to investigate a transaction
-    """
-    response = agent_executor.invoke({
-        "input": f"Please investigate transaction ID: {transaction_id} and provide a full fraud investigation report."
-    })
-    return response["output"]
+    print(f"\n{'='*50}")
+    print(f"🔍 Starting Investigation : {transaction_id}")
+    print(f"{'='*50}")
+
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=f"Investigate transaction ID: {transaction_id} and give full fraud investigation report.")
+    ]
+
+    # Agentic loop
+    while True:
+        response = llm_with_tools.invoke(messages)
+        messages.append(response)
+
+        if response.tool_calls:
+            print(f"\n⚙️  Calling {len(response.tool_calls)} tool(s)...")
+            for tool_call in response.tool_calls:
+                result = execute_tool(tool_call)
+                messages.append(
+                    ToolMessage(
+                        content=result,
+                        tool_call_id=tool_call["id"]
+                    )
+                )
+        else:
+            print(f"\n✅ Investigation Complete!")
+            return response.content
 
 
 # ─────────────────────────────────────────
 # Quick Test
 # ─────────────────────────────────────────
 if __name__ == "__main__":
-    print("\n🔍 Investigating TXN-1003 (High Risk)...\n")
+    print("\n🔴 Test 1 — High Risk Transaction")
     report = investigate("TXN-1003")
     print(report)
 
-    print("\n🔍 Investigating TXN-1004 (Normal)...\n")
+    print("\n✅ Test 2 — Normal Transaction")
     report = investigate("TXN-1004")
     print(report)
